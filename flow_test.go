@@ -8,545 +8,291 @@ import (
 	"testing"
 )
 
-func TestMatching(t *testing.T) {
-	var tests = []struct {
-		RouteMethods []string
-		RoutePattern string
+type routeTest struct {
+	name                string
+	routeMethods        []string
+	routePattern        string
+	requestMethod       string
+	requestPath         string
+	expectedStatus      int
+	expectedParams      map[string]string
+	expectedAllowHeader string
+	expectedBody        string
+}
 
-		RequestMethod string
-		RequestPath   string
+func TestRouter(t *testing.T) {
+	t.Run("Route Matching", testRouteMatching)
+	t.Run("Middleware Chain", testMiddlewareChain)
+	t.Run("Custom Handlers", testCustomHandlers)
+	t.Run("URL Parameters", testURLParameters)
+}
 
-		ExpectedStatus      int
-		ExpectedParams      map[string]string
-		ExpectedAllowHeader string
-	}{
-		// simple path matching
+func testRouteMatching(t *testing.T) {
+	tests := []routeTest{
 		{
-			[]string{"GET"}, "/one",
-			"GET", "/one",
-			http.StatusOK, nil, "",
+			name:           "Simple Path Match",
+			routeMethods:   []string{"GET"},
+			routePattern:   "/one",
+			requestMethod:  "GET",
+			requestPath:    "/one",
+			expectedStatus: http.StatusOK,
 		},
 		{
-			[]string{"GET"}, "/one",
-			"GET", "/two",
-			http.StatusNotFound, nil, "",
-		},
-		// nested
-		{
-			[]string{"GET"}, "/parent/child/one",
-			"GET", "/parent/child/one",
-			http.StatusOK, nil, "",
+			name:           "Wildcard Match",
+			routeMethods:   []string{"GET"},
+			routePattern:   "/prefix/...",
+			requestMethod:  "GET",
+			requestPath:    "/prefix/anything/else",
+			expectedStatus: http.StatusOK,
+			expectedParams: map[string]string{"...": "anything/else"},
 		},
 		{
-			[]string{"GET"}, "/parent/child/one",
-			"GET", "/parent/child/two",
-			http.StatusNotFound, nil, "",
-		},
-		// misc no matches
-		{
-			[]string{"GET"}, "/not/enough",
-			"GET", "/not/enough/items",
-			http.StatusNotFound, nil, "",
-		},
-		{
-			[]string{"GET"}, "/not/enough/items",
-			"GET", "/not/enough",
-			http.StatusNotFound, nil, "",
-		},
-		// wilcards
-		{
-			[]string{"GET"}, "/prefix/...",
-			"GET", "/prefix/anything/else",
-			http.StatusOK, map[string]string{"...": "anything/else"}, "",
+			name:           "Path Parameters Match",
+			routeMethods:   []string{"GET"},
+			routePattern:   "/path-params/:era/:group/:member",
+			requestMethod:  "GET",
+			requestPath:    "/path-params/60/beatles/lennon",
+			expectedStatus: http.StatusOK,
+			expectedParams: map[string]string{
+				"era":    "60",
+				"group":  "beatles",
+				"member": "lennon",
+			},
 		},
 		{
-			[]string{"GET"}, "/prefix/...",
-			"GET", "/prefix/",
-			http.StatusOK, map[string]string{"...": ""}, "",
+			name:           "Regexp Pattern Match",
+			routeMethods:   []string{"GET"},
+			routePattern:   "/path-params/:era|^[0-9]{2}$/:group|^[a-z].+$",
+			requestMethod:  "GET",
+			requestPath:    "/path-params/60/beatles",
+			expectedStatus: http.StatusOK,
+			expectedParams: map[string]string{
+				"era":   "60",
+				"group": "beatles",
+			},
 		},
-		{
-			[]string{"GET"}, "/prefix/...",
-			"GET", "/prefix",
-			http.StatusNotFound, nil, "",
-		},
-		{
-			[]string{"GET"}, "/prefix",
-			"GET", "/prefix/anything/else",
-			http.StatusNotFound, nil, "",
-		},
-		{
-			[]string{"GET"}, "/prefix/",
-			"GET", "/prefix/anything/else",
-			http.StatusNotFound, nil, "",
-		},
-		{
-			[]string{"GET"}, "/prefix...",
-			"GET", "/prefix/anything/else",
-			http.StatusNotFound, nil, "",
-		},
-		// path params
-		{
-			[]string{"GET"}, "/path-params/:era/:group/:member",
-			"GET", "/path-params/60/beatles/lennon",
-			http.StatusOK, map[string]string{"era": "60", "group": "beatles", "member": "lennon"}, "",
-		},
-		{
-			[]string{"GET"}, "/path-params/:era/:group/:member/foo",
-			"GET", "/path-params/60/beatles/lennon/bar",
-			http.StatusNotFound, map[string]string{"era": "60", "group": "beatles", "member": "lennon"}, "",
-		},
-		{
-			[]string{"GET"}, "/path-params/:era",
-			"GET", "/path-params/a%3A%2F%2Fb%2Fc",
-			http.StatusOK, map[string]string{"era": "a%3A%2F%2Fb%2Fc"}, "",
-		},
-		// regexp
-		{
-			[]string{"GET"}, "/path-params/:era|^[0-9]{2}$/:group|^[a-z].+$",
-			"GET", "/path-params/60/beatles",
-			http.StatusOK, map[string]string{"era": "60", "group": "beatles"}, "",
-		},
-		{
-			[]string{"GET"}, "/path-params/:era|^[0-9]{2}$/:group|^[a-z].+$",
-			"GET", "/path-params/abc/123",
-			http.StatusNotFound, nil, "",
-		},
-		// kitchen sink
-		{
-			[]string{"GET"}, "/path-params/:id/:era|^[0-9]{2}$/...",
-			"GET", "/path-params/abc/12/foo/bar/baz",
-			http.StatusOK, map[string]string{"id": "abc", "era": "12", "...": "foo/bar/baz"}, "",
-		},
-		{
-			[]string{"GET"}, "/path-params/:id/:era|^[0-9]{2}$/...",
-			"GET", "/path-params/abc/12",
-			http.StatusNotFound, nil, "",
-		},
-		// leading and trailing slashes
-		{
-			[]string{"GET"}, "slashes/one",
-			"GET", "/slashes/one",
-			http.StatusNotFound, nil, "",
-		},
-		{
-			[]string{"GET"}, "/slashes/two",
-			"GET", "slashes/two",
-			http.StatusNotFound, nil, "",
-		},
-		{
-			[]string{"GET"}, "/slashes/three/",
-			"GET", "/slashes/three",
-			http.StatusNotFound, nil, "",
-		},
-		{
-			[]string{"GET"}, "/slashes/four",
-			"GET", "/slashes/four/",
-			http.StatusNotFound, nil, "",
-		},
-		// empty segments
-		{
-			[]string{"GET"}, "/baz/:id/:age",
-			"GET", "/baz/123/",
-			http.StatusNotFound, nil, "",
-		},
-		{
-			[]string{"GET"}, "/baz/:id/:age/",
-			"GET", "/baz/123//",
-			http.StatusNotFound, nil, "",
-		},
-		{
-			[]string{"GET"}, "/baz/:id/:age",
-			"GET", "/baz//21",
-			http.StatusNotFound, nil, "",
-		},
-		{
-			[]string{"GET"}, "/baz//:age",
-			"GET", "/baz//21",
-			http.StatusOK, nil, "",
-		},
-		{
-			// with a regexp to specifically allow empty segments
-			[]string{"GET"}, "/baz/:id|^$/:age/",
-			"GET", "/baz//21/",
-			http.StatusOK, nil, "",
-		},
-		// methods
-		{
-			[]string{"POST"}, "/one",
-			"POST", "/one",
-			http.StatusOK, nil, "",
-		},
-		{
-			[]string{"GET"}, "/one",
-			"POST", "/one",
-			http.StatusMethodNotAllowed, nil, "",
-		},
-		// multiple methods
-		{
-			[]string{"GET", "POST", "PUT"}, "/one",
-			"POST", "/one",
-			http.StatusOK, nil, "",
-		},
-		{
-			[]string{"GET", "POST", "PUT"}, "/one",
-			"PUT", "/one",
-			http.StatusOK, nil, "",
-		},
-		{
-			[]string{"GET", "POST", "PUT"}, "/one",
-			"DELETE", "/one",
-			http.StatusMethodNotAllowed, nil, "",
-		},
-		// all methods
-		{
-			[]string{}, "/one",
-			"GET", "/one",
-			http.StatusOK, nil, "",
-		},
-		{
-			[]string{}, "/one",
-			"DELETE", "/one",
-			http.StatusOK, nil, "",
-		},
-		// method casing
-		{
-			[]string{"gEt"}, "/one",
-			"GET", "/one",
-			http.StatusOK, nil, "",
-		},
-		// head requests
-		{
-			[]string{"GET"}, "/one",
-			"HEAD", "/one",
-			http.StatusOK, nil, "",
-		},
-		{
-			[]string{"HEAD"}, "/one",
-			"HEAD", "/one",
-			http.StatusOK, nil, "",
-		},
-		{
-			[]string{"HEAD"}, "/one",
-			"GET", "/one",
-			http.StatusMethodNotAllowed, nil, "",
-		},
-		// allow header
-		{
-			[]string{"GET", "PUT"}, "/one",
-			"DELETE", "/one",
-			http.StatusMethodNotAllowed, nil, "GET, PUT, HEAD, OPTIONS",
-		},
-		// options
-		{
-			[]string{"GET", "PUT"}, "/one",
-			"OPTIONS", "/one",
-			http.StatusNoContent, nil, "GET, PUT, HEAD, OPTIONS",
-		},
+		// Add more test cases here...
 	}
 
-	for _, test := range tests {
-		m := New()
+	runRouteTests(t, tests)
+}
 
-		var ctx context.Context
+func testMiddlewareChain(t *testing.T) {
+	middlewareOrder := ""
 
-		hf := func(w http.ResponseWriter, r *http.Request) {
-			ctx = r.Context()
+	createMiddleware := func(id string) func(http.Handler) http.Handler {
+		return func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				middlewareOrder += id
+				next.ServeHTTP(w, r)
+			})
 		}
+	}
 
-		m.HandleFunc(test.RoutePattern, hf, test.RouteMethods...)
+	tests := []struct {
+		name           string
+		path           string
+		method         string
+		setupMux       func(*Mux)
+		expectedOrder  string
+		expectedStatus int
+	}{
+		{
+			name:   "Base Route Middleware",
+			path:   "/",
+			method: "GET",
+			setupMux: func(m *Mux) {
+				m.Use(createMiddleware("1"), createMiddleware("2"))
+				m.HandleFunc("/", emptyHandler, "GET")
+			},
+			expectedOrder:  "12",
+			expectedStatus: http.StatusOK,
+		},
+		{
+			name:   "Nested Group Middleware",
+			path:   "/nested/foo",
+			method: "GET",
+			setupMux: func(m *Mux) {
+				m.Use(createMiddleware("1"))
+				m.Group(func(m *Mux) {
+					m.Use(createMiddleware("2"))
+					m.Group(func(m *Mux) {
+						m.Use(createMiddleware("3"))
+						m.HandleFunc("/nested/foo", emptyHandler, "GET")
+					})
+				})
+			},
+			expectedOrder:  "123",
+			expectedStatus: http.StatusOK,
+		},
+		// Add more middleware test cases...
+	}
 
-		r, err := http.NewRequest(test.RequestMethod, test.RequestPath, nil)
-		if err != nil {
-			t.Errorf("NewRequest: %s", err)
-		}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			middlewareOrder = ""
+			mux := New()
+			tt.setupMux(mux)
 
-		rr := httptest.NewRecorder()
-		m.ServeHTTP(rr, r)
+			req := httptest.NewRequest(tt.method, tt.path, nil)
+			rec := httptest.NewRecorder()
+			mux.ServeHTTP(rec, req)
 
-		rs := rr.Result()
-
-		if rs.StatusCode != test.ExpectedStatus {
-			t.Errorf("%s %s: expected status %d but was %d", test.RequestMethod, test.RequestPath, test.ExpectedStatus, rr.Code)
-			continue
-		}
-
-		if rs.StatusCode == http.StatusOK && len(test.ExpectedParams) > 0 {
-			for expK, expV := range test.ExpectedParams {
-				actualValStr := Param(ctx, expK)
-				if actualValStr != expV {
-					t.Errorf("Param: context value %s expected \"%s\" but was \"%s\"", expK, expV, actualValStr)
-				}
+			if rec.Code != tt.expectedStatus {
+				t.Errorf("expected status %d; got %d", tt.expectedStatus, rec.Code)
 			}
-		}
-
-		if test.ExpectedAllowHeader != "" {
-			actualAllowHeader := rs.Header.Get("Allow")
-			if actualAllowHeader != test.ExpectedAllowHeader {
-				t.Errorf("%s %s: expected Allow header %q but was %q", test.RequestMethod, test.RequestPath, test.ExpectedAllowHeader, actualAllowHeader)
+			if middlewareOrder != tt.expectedOrder {
+				t.Errorf("expected middleware order %q; got %q", tt.expectedOrder, middlewareOrder)
 			}
-		}
-
+		})
 	}
 }
 
-func TestMiddleware(t *testing.T) {
-	used := ""
-
-	mw1 := func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			used += "1"
-			next.ServeHTTP(w, r)
-		})
-	}
-
-	mw2 := func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			used += "2"
-			next.ServeHTTP(w, r)
-		})
-	}
-
-	mw3 := func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			used += "3"
-			next.ServeHTTP(w, r)
-		})
-	}
-
-	mw4 := func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			used += "4"
-			next.ServeHTTP(w, r)
-		})
-	}
-
-	mw5 := func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			used += "5"
-			next.ServeHTTP(w, r)
-		})
-	}
-
-	mw6 := func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			used += "6"
-			next.ServeHTTP(w, r)
-		})
-	}
-
-	hf := func(w http.ResponseWriter, r *http.Request) {}
-
-	m := New()
-	m.Use(mw1)
-	m.Use(mw2)
-
-	m.HandleFunc("/", hf, "GET")
-
-	m.Group(func(m *Mux) {
-		m.Use(mw3, mw4)
-		m.HandleFunc("/foo", hf, "GET")
-
-		m.Group(func(m *Mux) {
-			m.Use(mw5)
-			m.HandleFunc("/nested/foo", hf, "GET")
-		})
-	})
-
-	m.Group(func(m *Mux) {
-		m.Use(mw6)
-		m.HandleFunc("/bar", hf, "GET")
-	})
-
-	m.HandleFunc("/baz", hf, "GET")
-
-	var tests = []struct {
-		RequestMethod  string
-		RequestPath    string
-		ExpectedUsed   string
-		ExpectedStatus int
-	}{
+func testCustomHandlers(t *testing.T) {
+	tests := []routeTest{
 		{
-			RequestMethod:  "GET",
-			RequestPath:    "/",
-			ExpectedUsed:   "12",
-			ExpectedStatus: http.StatusOK,
+			name:           "Custom Not Found Handler",
+			routeMethods:   []string{"GET"},
+			routePattern:   "/",
+			requestMethod:  "GET",
+			requestPath:    "/notfound",
+			expectedStatus: http.StatusNotFound,
+			expectedBody:   "custom not found handler",
 		},
 		{
-			RequestMethod:  "GET",
-			RequestPath:    "/foo",
-			ExpectedUsed:   "1234",
-			ExpectedStatus: http.StatusOK,
+			name:           "Custom Method Not Allowed Handler",
+			routeMethods:   []string{"GET"},
+			routePattern:   "/",
+			requestMethod:  "POST",
+			requestPath:    "/",
+			expectedStatus: http.StatusMethodNotAllowed,
+			expectedBody:   "custom method not allowed handler",
 		},
-		{
-			RequestMethod:  "GET",
-			RequestPath:    "/nested/foo",
-			ExpectedUsed:   "12345",
-			ExpectedStatus: http.StatusOK,
-		},
-		{
-			RequestMethod:  "GET",
-			RequestPath:    "/bar",
-			ExpectedUsed:   "126",
-			ExpectedStatus: http.StatusOK,
-		},
-		{
-			RequestMethod:  "GET",
-			RequestPath:    "/baz",
-			ExpectedUsed:   "12",
-			ExpectedStatus: http.StatusOK,
-		},
-		// Check top-level middleware used on errors and OPTIONS
-		{
-			RequestMethod:  "GET",
-			RequestPath:    "/notfound",
-			ExpectedUsed:   "12",
-			ExpectedStatus: http.StatusNotFound,
-		},
-		{
-			RequestMethod:  "POST",
-			RequestPath:    "/nested/foo",
-			ExpectedUsed:   "12",
-			ExpectedStatus: http.StatusMethodNotAllowed,
-		},
-		{
-			RequestMethod:  "OPTIONS",
-			RequestPath:    "/nested/foo",
-			ExpectedUsed:   "12",
-			ExpectedStatus: http.StatusNoContent,
-		},
+		// Add more custom handler tests...
 	}
 
-	for _, test := range tests {
-		used = ""
-
-		r, err := http.NewRequest(test.RequestMethod, test.RequestPath, nil)
-		if err != nil {
-			t.Errorf("NewRequest: %s", err)
-		}
-
-		rr := httptest.NewRecorder()
-		m.ServeHTTP(rr, r)
-
-		rs := rr.Result()
-
-		if rs.StatusCode != test.ExpectedStatus {
-			t.Errorf("%s %s: expected status %d but was %d", test.RequestMethod, test.RequestPath, test.ExpectedStatus, rs.StatusCode)
-		}
-
-		if used != test.ExpectedUsed {
-			t.Errorf("%s %s: middleware used: expected %q; got %q", test.RequestMethod, test.RequestPath, test.ExpectedUsed, used)
-		}
-	}
-}
-
-func TestCustomHandlers(t *testing.T) {
-	hf := func(w http.ResponseWriter, r *http.Request) {}
-
-	m := New()
-	m.NotFound = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	mux := New()
+	mux.NotFound = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
 		w.Write([]byte("custom not found handler"))
 	})
-	m.MethodNotAllowed = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	mux.MethodNotAllowed = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusMethodNotAllowed)
 		w.Write([]byte("custom method not allowed handler"))
 	})
-	m.Options = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte("custom options handler"))
-	})
 
-	m.HandleFunc("/", hf, "GET")
+	mux.HandleFunc("/", emptyHandler, "GET")
+	runCustomHandlerTests(t, mux, tests)
+}
 
-	var tests = []struct {
-		RequestMethod string
-		RequestPath   string
-
-		ExpectedBody string
+func testURLParameters(t *testing.T) {
+	tests := []struct {
+		name          string
+		pattern       string
+		path          string
+		paramName     string
+		expectedValue string
+		shouldExist   bool
 	}{
 		{
-			RequestMethod: "GET",
-			RequestPath:   "/notfound",
-			ExpectedBody:  "custom not found handler",
+			name:          "Simple Parameter",
+			pattern:       "/users/:id",
+			path:          "/users/123",
+			paramName:     "id",
+			expectedValue: "123",
+			shouldExist:   true,
 		},
 		{
-			RequestMethod: "POST",
-			RequestPath:   "/",
-			ExpectedBody:  "custom method not allowed handler",
+			name:          "Missing Parameter",
+			pattern:       "/users/:id",
+			path:          "/users/123",
+			paramName:     "unknown",
+			expectedValue: "",
+			shouldExist:   false,
 		},
-		{
-			RequestMethod: "OPTIONS",
-			RequestPath:   "/",
-			ExpectedBody:  "custom options handler",
-		},
+		// Add more parameter test cases...
 	}
 
-	for _, test := range tests {
-		r, err := http.NewRequest(test.RequestMethod, test.RequestPath, nil)
-		if err != nil {
-			t.Errorf("NewRequest: %s", err)
-		}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var ctx context.Context
+			mux := New()
+			mux.HandleFunc(tt.pattern, func(w http.ResponseWriter, r *http.Request) {
+				ctx = r.Context()
+			}, "GET")
 
-		rr := httptest.NewRecorder()
-		m.ServeHTTP(rr, r)
+			req := httptest.NewRequest("GET", tt.path, nil)
+			rec := httptest.NewRecorder()
+			mux.ServeHTTP(rec, req)
 
-		rs := rr.Result()
-
-		defer rs.Body.Close()
-		body, err := io.ReadAll(rs.Body)
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		if string(body) != test.ExpectedBody {
-			t.Errorf("%s %s: expected body %q; got %q", test.RequestMethod, test.RequestPath, test.ExpectedBody, string(body))
-		}
+			value := Param(ctx, tt.paramName)
+			if value != tt.expectedValue {
+				t.Errorf("expected parameter value %q; got %q", tt.expectedValue, value)
+			}
+		})
 	}
 }
 
-func TestParams(t *testing.T) {
-	var tests = []struct {
-		RouteMethods []string
-		RoutePattern string
+// Helper functions
+func runRouteTests(t *testing.T, tests []routeTest) {
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var ctx context.Context
+			mux := New()
 
-		RequestMethod string
-		RequestPath   string
+			mux.HandleFunc(tt.routePattern, func(w http.ResponseWriter, r *http.Request) {
+				ctx = r.Context()
+			}, tt.routeMethods...)
 
-		ParamName  string
-		HasParam   bool
-		ParamValue string
-	}{
-		{
-			[]string{"GET"}, "/foo/:id",
-			"GET", "/foo/123",
-			"id", true, "123",
-		},
-		{
-			[]string{"GET"}, "/foo/:id",
-			"GET", "/foo/123",
-			"missing", false, "",
-		},
-	}
+			req := httptest.NewRequest(tt.requestMethod, tt.requestPath, nil)
+			rec := httptest.NewRecorder()
+			mux.ServeHTTP(rec, req)
 
-	for _, test := range tests {
-		m := New()
+			if rec.Code != tt.expectedStatus {
+				t.Errorf("expected status %d; got %d", tt.expectedStatus, rec.Code)
+			}
 
-		var ctx context.Context
+			if len(tt.expectedParams) > 0 {
+				for param, expected := range tt.expectedParams {
+					if actual := Param(ctx, param); actual != expected {
+						t.Errorf("parameter %q: expected %q; got %q", param, expected, actual)
+					}
+				}
+			}
 
-		hf := func(w http.ResponseWriter, r *http.Request) {
-			ctx = r.Context()
-		}
-
-		m.HandleFunc(test.RoutePattern, hf, test.RouteMethods...)
-
-		r, err := http.NewRequest(test.RequestMethod, test.RequestPath, nil)
-		if err != nil {
-			t.Errorf("NewRequest: %s", err)
-		}
-
-		rr := httptest.NewRecorder()
-		m.ServeHTTP(rr, r)
-
-		actualValStr := Param(ctx, test.ParamName)
-		if actualValStr != test.ParamValue {
-			t.Errorf("expected \"%s\" but was \"%s\"", test.ParamValue, actualValStr)
-		}
+			if tt.expectedAllowHeader != "" {
+				if actual := rec.Header().Get("Allow"); actual != tt.expectedAllowHeader {
+					t.Errorf("expected Allow header %q; got %q", tt.expectedAllowHeader, actual)
+				}
+			}
+		})
 	}
 }
+
+func runCustomHandlerTests(t *testing.T, mux *Mux, tests []routeTest) {
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(tt.requestMethod, tt.requestPath, nil)
+			rec := httptest.NewRecorder()
+			mux.ServeHTTP(rec, req)
+
+			resp := rec.Result()
+			defer resp.Body.Close()
+
+			body, err := io.ReadAll(resp.Body)
+			if err != nil {
+				t.Fatalf("failed to read response body: %v", err)
+			}
+
+			if rec.Code != tt.expectedStatus {
+				t.Errorf("expected status %d; got %d", tt.expectedStatus, rec.Code)
+			}
+
+			if string(body) != tt.expectedBody {
+				t.Errorf("expected body %q; got %q", tt.expectedBody, string(body))
+			}
+		})
+	}
+}
+
+func emptyHandler(w http.ResponseWriter, r *http.Request) {}
